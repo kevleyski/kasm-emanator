@@ -219,6 +219,7 @@ const Emanator: React.FC = () => {
     const [noteName, setNoteName] = useState<string>("C4");
     const [chordKeyDetection, setChordKeyDetection] = useState<string>("");
     const [patternDetection, setPatternDetection] = useState<string>("");
+    const [activeKeys, setActiveKeys] = useState<number[]>([]);
 
     // MIDI keyboard keys and mapping
     const keyboardKeys = [
@@ -248,6 +249,10 @@ const Emanator: React.FC = () => {
     const playKeyboardNote = (note: number) => {
         if ((window as any).kasmWebMIDI && (window as any).kasmWebMIDI.currentMidiOutput) {
             (window as any).kasmWebMIDI.sendNoteOn(note, velocity, selectedChannel);
+            setActiveKeys(prev => [...prev, note]);
+            setTimeout(() => {
+                setActiveKeys(prev => prev.filter(n => n !== note));
+            }, 500);
         }
     };
 
@@ -292,88 +297,83 @@ const Emanator: React.FC = () => {
         }
     };
 
+    // Enumerate MIDI devices on mount
     useEffect(() => {
         refreshMidiDevices();
     }, []);
 
-    useEffect(() => {
-        // Set the selected MIDI output on kasmWebMIDI
-        if ((window as any).kasmWebMIDI && selectedDeviceId) {
-            navigator.requestMIDIAccess().then(midiAccess => {
-                let selectedOutput = null;
-                midiAccess.outputs.forEach((output: any) => {
-                    if (output.id === selectedDeviceId) {
-                        selectedOutput = output;
-                    }
-                });
-                if (selectedOutput) {
-                    (window as any).kasmWebMIDI.currentMidiOutput = selectedOutput;
-                }
-            });
-        }
-    }, [selectedDeviceId]);
-
-    const handlePlay = () => {
-        if (!(window as any).kasmWebMIDI) {
-            setPlaybackStatus('No MIDI device selected');
-            return;
-        }
-        try {
-            const notesData = JSON.parse(notesJson);
-            const notes = notesData.notes || [];
-            if (notes.length === 0) {
-                setPlaybackStatus('No notes');
-                return;
-            }
-            const success = (window as any).kasmWebMIDI.playMidiClip(notes, {
-                tempo,
-                channel: selectedChannel,
-                loop: false,
-                algorithm: selectedAlgorithmDropdown,
-                rootNote,
-                semitone,
-                velocity,
-                enc1,
-                enc2,
-                rateMs,
-                modwheel,
-                pan
-            });
-            if (success) {
-                setIsPlaying(true);
-                setPlaybackStatus('Playing...');
-                setTimeout(() => {
-                    setIsPlaying(false);
-                    setPlaybackStatus('');
-                }, 5000);
-            }
-        } catch (err) {
-            setPlaybackStatus('Error playing clip');
+    // Handle MIDI device selection
+    const handleDeviceChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+        setSelectedDeviceId(e.target.value);
+        if ((window as any).kasmWebMIDI) {
+            (window as any).kasmWebMIDI.setCurrentMidiOutput(e.target.value);
         }
     };
 
-    const handleStop = () => {
-        if ((window as any).kasmWebMIDI) {
-            (window as any).kasmWebMIDI.stopPlayback();
+    // Handle MIDI channel selection
+    const handleChannelChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+        setSelectedChannel(Number(e.target.value));
+    };
+
+    // Play/Stop logic
+    const handlePlay = () => {
+        setIsPlaying(true);
+        setPlaybackStatus('Playing');
+        if ((window as any).kasmWebMIDI && (window as any).kasmWebMIDI.currentMidiOutput) {
+            (window as any).kasmWebMIDI.sendNoteOn(rootNote, velocity, selectedChannel);
+            setActiveKeys(prev => [...prev, rootNote]);
+            setTimeout(() => {
+                (window as any).kasmWebMIDI.sendNoteOff(rootNote, selectedChannel);
+                setActiveKeys(prev => prev.filter(n => n !== rootNote));
+                setIsPlaying(false);
+                setPlaybackStatus('Stopped');
+            }, 500);
         }
+    };
+    const handleStop = () => {
         setIsPlaying(false);
         setPlaybackStatus('Stopped');
+        if ((window as any).kasmWebMIDI && (window as any).kasmWebMIDI.currentMidiOutput) {
+            (window as any).kasmWebMIDI.sendNoteOff(rootNote, selectedChannel);
+            setActiveKeys(prev => prev.filter(n => n !== rootNote));
+        }
     };
 
     const defaultNotesJson = JSON.stringify({ notes: [{ pitch: 60, velocity: 100, duration: 480 }] }, null, 2);
 
     const drawMidiClip = (result) => {
-        // TODO: Implement MIDI clip visualization on canvas
-        // For now, just clear the canvas
-        const canvas = document.getElementById('kasmHTMLCanvas');
+        // Enhanced MIDI clip visualization
+        const canvas = document.getElementById('kasmHTMLCanvas') as HTMLCanvasElement | null;
         if (canvas) {
             const ctx = canvas.getContext('2d');
+            if (!ctx) return;
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            // Draw notes if result.notes exists
+            // Draw grid
+            ctx.strokeStyle = '#333';
+            for (let i = 0; i < canvas.width; i += 40) {
+                ctx.beginPath();
+                ctx.moveTo(i, 0);
+                ctx.lineTo(i, canvas.height);
+                ctx.stroke();
+            }
+            for (let j = 0; j < canvas.height; j += 12) {
+                ctx.beginPath();
+                ctx.moveTo(0, j);
+                ctx.lineTo(canvas.width, j);
+                ctx.stroke();
+            }
+            // Draw notes
             if (result && result.notes) {
                 result.notes.forEach((note, i) => {
+                    // Map pitch to vertical position, start_time to horizontal
+                    const y = canvas.height - (note.pitch * (canvas.height / 128));
+                    const x = (note.start_time || i) * 10;
+                    const w = (note.duration || 10) * 2;
+                    const h = 8 + (note.velocity ? note.velocity / 16 : 0);
                     ctx.fillStyle = '#4CAF50';
-                    ctx.fillRect(i * 10, canvas.height - note.pitch, 8, 8);
+                    ctx.fillRect(x, y, w, h);
+                    ctx.strokeStyle = '#222';
+                    ctx.strokeRect(x, y, w, h);
                 });
             }
         }
@@ -450,7 +450,7 @@ const Emanator: React.FC = () => {
     };
 
     // Debounce autoTransform
-    const autoTransformTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+    const autoTransformTimeoutRef = React.useRef<number | null>(null);
     const debouncedAutoTransform = () => {
         if (autoTransformTimeoutRef.current) {
             clearTimeout(autoTransformTimeoutRef.current);
@@ -458,6 +458,21 @@ const Emanator: React.FC = () => {
         autoTransformTimeoutRef.current = setTimeout(() => {
             autoTransform();
         }, 100);
+    };
+
+    // Modwheel CC handler
+    const handleModwheelChange = (value: number) => {
+        setModwheel(value);
+        if ((window as any).kasmWebMIDI && (window as any).kasmWebMIDI.currentMidiOutput) {
+            (window as any).kasmWebMIDI.sendControlChange(1, value, selectedChannel);
+        }
+    };
+    // Pan CC handler
+    const handlePanChange = (value: number) => {
+        setPan(value);
+        if ((window as any).kasmWebMIDI && (window as any).kasmWebMIDI.currentMidiOutput) {
+            (window as any).kasmWebMIDI.sendControlChange(10, value, selectedChannel);
+        }
     };
 
     return (
@@ -474,7 +489,7 @@ const Emanator: React.FC = () => {
                         <label>
                             <select style={{ padding: '3px', marginLeft: '10px' }}
                                 value={selectedDeviceId}
-                                onChange={e => setSelectedDeviceId(e.target.value)}>
+                                onChange={handleDeviceChange}>
                                 <option value="">Select MIDI Device...</option>
                                 {midiDevices.map(device => (
                                     <option key={device.id} value={device.id}>{device.name}</option>
@@ -486,7 +501,7 @@ const Emanator: React.FC = () => {
                             MIDI Channel:
                             <select style={{ padding: '3px', width: '40px', marginLeft: '10px' }}
                                 value={selectedChannel}
-                                onChange={e => setSelectedChannel(Number(e.target.value))}>
+                                onChange={handleChannelChange}>
                                 {[...Array(16)].map((_, i) => (
                                     <option key={i} value={i}>{i + 1}</option>
                                 ))}
@@ -524,7 +539,7 @@ const Emanator: React.FC = () => {
                                 min={30}
                                 max={300}
                                 value={tempo}
-                                onChange={e => setTempo(Number(e.target.value))}
+                                onChange={e => { setTempo(Number(e.target.value)); debouncedAutoTransform(); }}
                                 style={{ marginLeft: '10px', width: '60px', padding: '3px' }}
                             />
                         </label>
@@ -532,7 +547,7 @@ const Emanator: React.FC = () => {
                             Notes JSON:
                             <textarea
                                 value={notesJson}
-                                onChange={e => setNotesJson(e.target.value)}
+                                onChange={e => { setNotesJson(e.target.value); debouncedAutoTransform(); }}
                                 rows={4}
                                 style={{ width: '100%', fontFamily: 'monospace', marginTop: '5px' }}
                             />
@@ -557,49 +572,49 @@ const Emanator: React.FC = () => {
                         {/* Root Note Dial/Slider and MIDI Name Input */}
                         <div style={{ textAlign: 'center' }}>
                             <label>Root Note<br/>(inlet_0)</label><br/>
-                            <input type="range" min={0} max={127} value={rootNote} onChange={e => setRootNote(Number(e.target.value))} style={{ width: '60px' }} />
-                            <input type="number" min={0} max={127} value={rootNote} onChange={e => setRootNote(Number(e.target.value))} style={{ width: '60px', margin: '5px' }} />
-                            <input type="text" value={noteName} onChange={e => handleNoteNameChange(e.target.value)} style={{ width: '45px', textAlign: 'center', fontSize: '12px', color: '#666', padding: '2px' }} title="Type note name (e.g. C4, F#3, Bb5)" />
+                            <input type="range" min={0} max={127} value={rootNote} onChange={e => { setRootNote(Number(e.target.value)); debouncedAutoTransform(); }} style={{ width: '60px' }} />
+                            <input type="number" min={0} max={127} value={rootNote} onChange={e => { setRootNote(Number(e.target.value)); debouncedAutoTransform(); }} style={{ width: '60px', margin: '5px' }} />
+                            <input type="text" value={noteName} onChange={e => { handleNoteNameChange(e.target.value); debouncedAutoTransform(); }} style={{ width: '45px', textAlign: 'center', fontSize: '12px', color: '#666', padding: '2px' }} title="Type note name (e.g. C4, F#3, Bb5)" />
                             <div style={{ fontSize: '12px', color: '#888' }}>{`MIDI: ${rootNote} (${midiToNoteName(rootNote)})`}</div>
                         </div>
                         {/* Semitone Offset Dial/Slider and Number Input */}
                         <div style={{ textAlign: 'center' }}>
                             <label>Semitone Offset<br/>(inlet_1)</label><br/>
-                            <input type="range" min={-127} max={127} value={semitone} onChange={e => setSemitone(Number(e.target.value))} style={{ width: '60px' }} />
-                            <input type="number" min={-127} max={127} value={semitone} onChange={e => setSemitone(Number(e.target.value))} style={{ width: '60px', margin: '5px' }} />
+                            <input type="range" min={-127} max={127} value={semitone} onChange={e => { setSemitone(Number(e.target.value)); debouncedAutoTransform(); }} style={{ width: '60px' }} />
+                            <input type="number" min={-127} max={127} value={semitone} onChange={e => { setSemitone(Number(e.target.value)); debouncedAutoTransform(); }} style={{ width: '60px', margin: '5px' }} />
                         </div>
                         {/* Velocity Dial/Slider and Number Input */}
                         <div style={{ textAlign: 'center' }}>
                             <label>Velocity<br/>(inlet_2)</label><br/>
-                            <input type="range" min={0} max={127} value={velocity} onChange={e => setVelocity(Number(e.target.value))} style={{ width: '60px' }} />
-                            <input type="number" min={0} max={127} value={velocity} onChange={e => setVelocity(Number(e.target.value))} style={{ width: '60px', margin: '5px' }} />
+                            <input type="range" min={0} max={127} value={velocity} onChange={e => { setVelocity(Number(e.target.value)); debouncedAutoTransform(); }} style={{ width: '60px' }} />
+                            <input type="number" min={0} max={127} value={velocity} onChange={e => { setVelocity(Number(e.target.value)); debouncedAutoTransform(); }} style={{ width: '60px', margin: '5px' }} />
                         </div>
                         {/* Enc1 Dial/Slider and Number Input */}
                         <div style={{ textAlign: 'center' }}>
                             <label>Enc1<br/>(inlet_3)</label><br/>
-                            <input type="range" min={0} max={127} value={enc1} onChange={e => setEnc1(Number(e.target.value))} style={{ width: '60px' }} />
-                            <input type="number" min={0} max={127} value={enc1} onChange={e => setEnc1(Number(e.target.value))} style={{ width: '60px', margin: '5px' }} />
+                            <input type="range" min={0} max={127} value={enc1} onChange={e => { setEnc1(Number(e.target.value)); debouncedAutoTransform(); }} style={{ width: '60px' }} />
+                            <input type="number" min={0} max={127} value={enc1} onChange={e => { setEnc1(Number(e.target.value)); debouncedAutoTransform(); }} style={{ width: '60px', margin: '5px' }} />
                         </div>
                         {/* Enc2 Dial/Slider and Number Input */}
                         <div style={{ textAlign: 'center' }}>
                             <label>Enc2<br/>(inlet_4)</label><br/>
-                            <input type="range" min={0} max={127} value={enc2} onChange={e => setEnc2(Number(e.target.value))} style={{ width: '60px' }} />
-                            <input type="number" min={0} max={127} value={enc2} onChange={e => setEnc2(Number(e.target.value))} style={{ width: '60px', margin: '5px' }} />
+                            <input type="range" min={0} max={127} value={enc2} onChange={e => { setEnc2(Number(e.target.value)); debouncedAutoTransform(); }} style={{ width: '60px' }} />
+                            <input type="number" min={0} max={127} value={enc2} onChange={e => { setEnc2(Number(e.target.value)); debouncedAutoTransform(); }} style={{ width: '60px', margin: '5px' }} />
                         </div>
                         {/* Rate Dial/Slider and Number Input */}
                         <div style={{ textAlign: 'center' }}>
                             <label>Rate<br/>(ms)</label><br/>
-                            <input type="range" min={30} max={1500} value={rateMs} onChange={e => setRateMs(Number(e.target.value))} style={{ width: '60px' }} />
-                            <input type="number" min={30} max={1500} value={rateMs} onChange={e => setRateMs(Number(e.target.value))} style={{ width: '60px', margin: '5px' }} />
+                            <input type="range" min={30} max={1500} value={rateMs} onChange={e => { setRateMs(Number(e.target.value)); debouncedAutoTransform(); }} style={{ width: '60px' }} />
+                            <input type="number" min={30} max={1500} value={rateMs} onChange={e => { setRateMs(Number(e.target.value)); debouncedAutoTransform(); }} style={{ width: '60px', margin: '5px' }} />
                         </div>
                         {/* Modwheel and Pan Sliders/Number Inputs */}
                         <div style={{ textAlign: 'center' }}>
                             <label>Modwheel CC#1</label><br/>
-                            <input type="range" min={0} max={127} value={modwheel} onChange={e => setModwheel(Number(e.target.value))} style={{ width: '120px', marginRight: '10px' }} />
-                            <input type="number" min={0} max={127} value={modwheel} onChange={e => setModwheel(Number(e.target.value))} style={{ width: '50px', textAlign: 'center', marginRight: '20px' }} />
+                            <input type="range" min={0} max={127} value={modwheel} onChange={e => { handleModwheelChange(Number(e.target.value)); debouncedAutoTransform(); }} style={{ width: '120px', marginRight: '10px' }} />
+                            <input type="number" min={0} max={127} value={modwheel} onChange={e => { handleModwheelChange(Number(e.target.value)); debouncedAutoTransform(); }} style={{ width: '50px', textAlign: 'center', marginRight: '20px' }} />
                             <label>Pan CC#10</label><br/>
-                            <input type="range" min={0} max={127} value={pan} onChange={e => setPan(Number(e.target.value))} style={{ width: '120px', marginRight: '10px' }} />
-                            <input type="number" min={0} max={127} value={pan} onChange={e => setPan(Number(e.target.value))} style={{ width: '50px', textAlign: 'center' }} />
+                            <input type="range" min={0} max={127} value={pan} onChange={e => { handlePanChange(Number(e.target.value)); debouncedAutoTransform(); }} style={{ width: '120px', marginRight: '10px' }} />
+                            <input type="number" min={0} max={127} value={pan} onChange={e => { handlePanChange(Number(e.target.value)); debouncedAutoTransform(); }} style={{ width: '50px', textAlign: 'center' }} />
                         </div>
                     </div>
                 </div>
@@ -664,7 +679,7 @@ const Emanator: React.FC = () => {
                         <g id="whiteKeys">
                             {keyboardKeys.map((k, i) => (
                                 <g key={k.note}>
-                                    <rect x={i * 60} y={0} width={60} height={120} fill="white" stroke="#333" strokeWidth={1} rx={0} ry={0}
+                                    <rect x={i * 60} y={0} width={60} height={120} fill={activeKeys.includes(k.note) ? '#4CAF50' : 'white'} stroke="#333" strokeWidth={1} rx={0} ry={0}
                                         onClick={() => playKeyboardNote(k.note)} style={{ cursor: 'pointer' }} />
                                     <text x={i * 60 + 30} y={110} textAnchor="middle" fontSize={12} fill="#666">{k.label}</text>
                                     <text x={i * 60 + 30} y={100} textAnchor="middle" fontSize={10} fill="#999">{k.key}</text>
@@ -674,7 +689,7 @@ const Emanator: React.FC = () => {
                         <g id="blackKeys">
                             {blackKeys.map((k, i) => (
                                 <g key={k.note}>
-                                    <rect x={k.x} y={0} width={40} height={80} fill="#333" stroke="#000" strokeWidth={1} rx={0} ry={0}
+                                    <rect x={k.x} y={0} width={40} height={80} fill={activeKeys.includes(k.note) ? '#4CAF50' : '#333'} stroke="#000" strokeWidth={1} rx={0} ry={0}
                                         onClick={() => playKeyboardNote(k.note)} style={{ cursor: 'pointer' }} />
                                     <text x={k.x + 20} y={70} textAnchor="middle" fontSize={10} fill="white">{k.label}</text>
                                     <text x={k.x + 20} y={60} textAnchor="middle" fontSize={10} fill="#ccc">{k.key}</text>
