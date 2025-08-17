@@ -360,6 +360,106 @@ const Emanator: React.FC = () => {
         setPlaybackStatus('Stopped');
     };
 
+    const defaultNotesJson = JSON.stringify({ notes: [{ pitch: 60, velocity: 100, duration: 480 }] }, null, 2);
+
+    const drawMidiClip = (result) => {
+        // TODO: Implement MIDI clip visualization on canvas
+        // For now, just clear the canvas
+        const canvas = document.getElementById('kasmHTMLCanvas');
+        if (canvas) {
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            // Draw notes if result.notes exists
+            if (result && result.notes) {
+                result.notes.forEach((note, i) => {
+                    ctx.fillStyle = '#4CAF50';
+                    ctx.fillRect(i * 10, canvas.height - note.pitch, 8, 8);
+                });
+            }
+        }
+    };
+
+    const autoTransform = () => {
+        // Synchronize rate and tempo
+        if (rateMs > 0) {
+            const bpm = Math.round(60000 / rateMs) / 2;
+            if (bpm >= 20 && bpm <= 999 && tempo !== bpm) setTempo(bpm);
+        }
+        if (tempo > 0) {
+            const rate = Math.round(60000 / tempo) / 2;
+            if (rate >= 30 && rate <= 1500 && rateMs !== rate) setRateMs(rate);
+        }
+        let inputNotes;
+        try {
+            inputNotes = JSON.parse(notesJson);
+        } catch (e) {
+            setPlaybackStatus('Invalid JSON input: ' + e.message);
+            setNotesJson(JSON.stringify({ notes: [] }, null, 2));
+            drawMidiClip({ notes: [] });
+            return;
+        }
+        try {
+            // WASM transform call
+            const result = (window as any).kasm_rust?.kasm_transform_notes(
+                inputNotes,
+                rateMs,
+                rootNote,
+                semitone,
+                velocity,
+                enc1,
+                enc2,
+                selectedAlgorithmDropdown
+            );
+            setNotesJson(JSON.stringify(result, null, 2));
+            drawMidiClip(result);
+            setPlaybackStatus('');
+            // Auto-play MIDI after short delay
+            if ((window as any).kasmWebMIDI?.currentMidiOutput && result?.notes?.length > 0) {
+                setTimeout(() => {
+                    (window as any).kasmWebMIDI.playMidiClip(result.notes, {
+                        tempo,
+                        channel: selectedChannel,
+                        loop: false,
+                        algorithm: selectedAlgorithmDropdown,
+                        rootNote,
+                        semitone,
+                        velocity,
+                        enc1,
+                        enc2,
+                        rateMs,
+                        modwheel,
+                        pan
+                    });
+                }, 500);
+            }
+            // Pattern/chord detection stub
+            setChordKeyDetection(result.chordKeyDetection || '');
+            setPatternDetection(result.patternDetection || '');
+        } catch (err) {
+            setPlaybackStatus('Error: ' + err.message);
+            setNotesJson(JSON.stringify({ notes: [] }, null, 2));
+            drawMidiClip({ notes: [] });
+        }
+    };
+
+    const loadDefaultExample = () => {
+        setSelectedAlgorithmDropdown(0);
+        setNotesJson(defaultNotesJson);
+        setChordKeyDetection('');
+        setPatternDetection('');
+    };
+
+    // Debounce autoTransform
+    const autoTransformTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+    const debouncedAutoTransform = () => {
+        if (autoTransformTimeoutRef.current) {
+            clearTimeout(autoTransformTimeoutRef.current);
+        }
+        autoTransformTimeoutRef.current = setTimeout(() => {
+            autoTransform();
+        }, 100);
+    };
+
     return (
         <div className="emanator-main-ui" data-testid="emanator-root" style={{ padding: '2em' }}>
             <h1 style={{ fontSize: '2.5em', marginBottom: '0.5em' }}>Emanator MIDI Arpeggiator Editor</h1>
@@ -444,7 +544,7 @@ const Emanator: React.FC = () => {
                         Algorithm:
                         <select
                             value={selectedAlgorithmDropdown}
-                            onChange={e => setSelectedAlgorithmDropdown(Number(e.target.value))}
+                            onChange={e => { setSelectedAlgorithmDropdown(Number(e.target.value)); debouncedAutoTransform(); }}
                             style={{ padding: '3px', marginLeft: '10px', width: '80%' }}
                         >
                             {algorithmDropdownOptions.map(opt => (
@@ -502,6 +602,60 @@ const Emanator: React.FC = () => {
                             <input type="number" min={0} max={127} value={pan} onChange={e => setPan(Number(e.target.value))} style={{ width: '50px', textAlign: 'center' }} />
                         </div>
                     </div>
+                </div>
+                <div style={{ margin: '10px 0', padding: '10px', background: '#f9f9f9' }}>
+                    <label>Choose an Emanator algorithm (quick select):<br/>
+                        <div style={{ marginBottom: '10px' }}>
+                            <label><input type="radio" name="emanatorQuick"
+                                checked={selectedAlgorithmDropdown === 2}
+                                onChange={() => { setSelectedAlgorithmDropdown(2); autoTransform(); }} />
+                                Emanator</label>
+                            <label style={{ marginLeft: '15px' }}><input type="radio" name="emanatorQuick"
+                                checked={selectedAlgorithmDropdown === 63}
+                                onChange={() => { setSelectedAlgorithmDropdown(63); autoTransform(); }} />
+                                Looper</label>
+                            <label style={{ marginLeft: '15px' }}><input type="radio" name="emanatorQuick"
+                                checked={selectedAlgorithmDropdown === 93}
+                                onChange={() => { setSelectedAlgorithmDropdown(93); autoTransform(); }} />
+                                Bangaz</label>
+                            <label style={{ marginLeft: '15px' }}><input type="radio" name="emanatorQuick"
+                                checked={selectedAlgorithmDropdown === 169}
+                                onChange={() => { setSelectedAlgorithmDropdown(169); autoTransform(); }} />
+                                Arpeggiator</label>
+                            <label style={{ marginLeft: '15px' }}><input type="radio" name="emanatorQuick"
+                                checked={selectedAlgorithmDropdown === 83}
+                                onChange={() => { setSelectedAlgorithmDropdown(83); autoTransform(); }} />
+                                Shuffle</label>
+                            <label style={{ marginLeft: '15px' }}><input type="radio" name="emanatorQuick"
+                                checked={selectedAlgorithmDropdown === 148}
+                                onChange={() => { setSelectedAlgorithmDropdown(148); autoTransform(); }} />
+                                LFO</label>
+                            <label style={{ marginLeft: '15px' }}><input type="radio" name="emanatorQuick"
+                                checked={selectedAlgorithmDropdown === 6}
+                                onChange={() => { setSelectedAlgorithmDropdown(6); autoTransform(); }} />
+                                Chords</label>
+                            <label style={{ marginLeft: '15px' }}><input type="radio" name="emanatorQuick"
+                                checked={selectedAlgorithmDropdown === 82}
+                                onChange={() => { setSelectedAlgorithmDropdown(82); autoTransform(); }} />
+                                Patterns</label>
+                            <label style={{ marginLeft: '15px' }}><input type="radio" name="emanatorQuick"
+                                checked={selectedAlgorithmDropdown === 75}
+                                onChange={() => { setSelectedAlgorithmDropdown(75); autoTransform(); }} />
+                                Counterpoint</label>
+                            <label style={{ marginLeft: '15px' }}><input type="radio" name="emanatorQuick"
+                                checked={selectedAlgorithmDropdown === 80}
+                                onChange={() => { setSelectedAlgorithmDropdown(80); autoTransform(); }} />
+                                Drum Rack</label>
+                            <label style={{ marginLeft: '15px' }}><input type="radio" name="emanatorQuick"
+                                checked={selectedAlgorithmDropdown === 46}
+                                onChange={() => { setSelectedAlgorithmDropdown(46); autoTransform(); }} />
+                                Chaos!</label>
+                            <label style={{ marginLeft: '15px' }}><input type="radio" name="emanatorQuick"
+                                checked={selectedAlgorithmDropdown === 0}
+                                onChange={() => { loadDefaultExample(); autoTransform(); }} />
+                                Reset</label>
+                        </div>
+                    </label>
                 </div>
             </div>
             <div style={{ marginBottom: '20px' }}>
