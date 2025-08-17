@@ -1,2 +1,3 @@
-# emanator
-Kasm Emanators Browser and Pattern Editor Tool
+# Emanator
+
+This is the Emanator patterns editor app, split for submodule use.
